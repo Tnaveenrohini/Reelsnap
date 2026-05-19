@@ -1,18 +1,16 @@
 {
   "name": "reelsnap",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Instagram Reel & Video Downloader — Premium Dark UI with Express.js backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "install:deps": "npm install"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "axios": "^1.7.2",
     "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "instagram-url-direct": "^1.1.8"
+    "express": "^4.19.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"
