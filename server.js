@@ -25,12 +25,7 @@ const PORT = process.env.PORT || 3000;
 const RAPIDAPI_KEY  = process.env.RAPIDAPI_KEY  || 'e1a114cc67msh944af74a26bd9edp1735d9jsn28ed5df7737f';
 const RAPIDAPI_HOST = 'instagram120.p.rapidapi.com';
 const RAPIDAPI_URL  = 'https://instagram120.p.rapidapi.com/api/instagram/post';
-// Try these one at a time:
-const RAPIDAPI_URL = 'https://instagram120.p.rapidapi.com/api/instagram/posts'; 
-// or
-const RAPIDAPI_URL = 'https://instagram120.p.rapidapi.com/api/instagram/reels';
-// or  
-const RAPIDAPI_URL = 'https://instagram120.p.rapidapi.com/api/instagram/media';
+
 /* ═══════════════════════════════════════════════════════════
    MIDDLEWARE
 ═══════════════════════════════════════════════════════════ */
