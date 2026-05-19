@@ -2,7 +2,7 @@
    ReelSnap — Express.js Backend Server
    Instagram Video Downloader API
 
-   Primary:  instagram-reels-downloader-api (RapidAPI)
+   Primary:  instagram120.p.rapidapi.com (RapidAPI)
    Fallback: Page scraping via axios
 
    Endpoints:
@@ -23,8 +23,8 @@ const PORT = process.env.PORT || 3000;
 
 /* ─── RapidAPI credentials ─── */
 const RAPIDAPI_KEY  = process.env.RAPIDAPI_KEY  || 'e1a114cc67msh944af74a26bd9edp1735d9jsn28ed5df7737f';
-const RAPIDAPI_HOST = 'instagram-reels-downloader-api.p.rapidapi.com';
-const RAPIDAPI_URL  = 'https://instagram-reels-downloader-api.p.rapidapi.com/download';
+const RAPIDAPI_HOST = 'instagram120.p.rapidapi.com';
+const RAPIDAPI_URL  = 'https://instagram120.p.rapidapi.com/api/instagram/post';
 
 /* ═══════════════════════════════════════════════════════════
    MIDDLEWARE
@@ -61,7 +61,7 @@ function isValidInstagramURL(url) {
 }
 
 /**
- * Normalise an Instagram URL — ensure trailing slash, keep query params for RapidAPI
+ * Normalise an Instagram URL — ensure trailing slash, strip query params
  * @param {string} url
  * @returns {string}
  */
@@ -76,42 +76,97 @@ function normaliseURL(url) {
   }
 }
 
+/**
+ * Extracts the shortcode from an Instagram URL
+ * @param {string} url
+ * @returns {string|null}
+ */
+function extractShortcode(url) {
+  const match = url.match(/\/(reel|p|tv)\/([A-Za-z0-9_\-]+)/);
+  return match ? match[2] : null;
+}
+
 /* ═══════════════════════════════════════════════════════════
-   PRIMARY: instagram-reels-downloader-api (RapidAPI)
+   PRIMARY: instagram120.p.rapidapi.com
 ═══════════════════════════════════════════════════════════ */
 
 /**
- * Call the RapidAPI Instagram Reels Downloader endpoint.
- * Handles multiple response shapes returned by this API.
+ * Call the instagram120 RapidAPI endpoint.
+ * Sends { url } as POST body and handles multiple response shapes.
  *
- * @param {string} instagramUrl  — user-supplied URL (with or without query params)
+ * @param {string} instagramUrl
  * @returns {Promise<Object>}
  */
 async function fetchViaRapidAPI(instagramUrl) {
-  const apiRes = await axios.get(RAPIDAPI_URL, {
-    params: { url: instagramUrl },
-    headers: {
-      'Content-Type':    'application/json',
-      'x-rapidapi-host': RAPIDAPI_HOST,
-      'x-rapidapi-key':  RAPIDAPI_KEY
-    },
-    timeout: 20000
-  });
+  const normUrl   = normaliseURL(instagramUrl);
+  const shortcode = extractShortcode(normUrl);
+
+  const apiRes = await axios.post(
+    RAPIDAPI_URL,
+    { url: normUrl },
+    {
+      headers: {
+        'Content-Type':    'application/json',
+        'x-rapidapi-host': RAPIDAPI_HOST,
+        'x-rapidapi-key':  RAPIDAPI_KEY
+      },
+      timeout: 20000
+    }
+  );
 
   const d = apiRes.data;
-  console.log('[RapidAPI] raw response:', JSON.stringify(d).slice(0, 500));
+  console.log('[RapidAPI] raw response:', JSON.stringify(d).slice(0, 600));
 
-  /* ── Shape A: { data: { download_url, thumbnail_url, ... } } ── */
-  if (d && d.data && (d.data.download_url || d.data.url)) {
-    return {
-      status:     true,
-      download:   d.data.download_url || d.data.url,
-      downloadSD: d.data.download_url_sd || d.data.url_sd || null,
-      thumbnail:  d.data.thumbnail_url || d.data.thumbnail || '',
-      quality:    'HD',
-      title:      d.data.title    || 'Instagram Video',
-      author:     d.data.author   || d.data.username || ''
-    };
+  /* ── Shape A: { data: { video_versions, image_versions2, user, ... } } (GraphQL-style) ── */
+  if (d && d.data) {
+    const data = d.data;
+
+    // video_versions array — pick highest quality (first)
+    if (Array.isArray(data.video_versions) && data.video_versions.length > 0) {
+      const hd = data.video_versions[0];
+      const sd = data.video_versions[1] || null;
+      const thumb = data.image_versions2?.candidates?.[0]?.url || '';
+      return {
+        status:     true,
+        download:   hd.url,
+        downloadSD: sd ? sd.url : null,
+        thumbnail:  thumb,
+        quality:    'HD',
+        title:      data.caption?.text?.slice(0, 80) || 'Instagram Video',
+        author:     data.user?.username || ''
+      };
+    }
+
+    // carousel_media — pick first video item
+    if (Array.isArray(data.carousel_media)) {
+      const videoItem = data.carousel_media.find(m => Array.isArray(m.video_versions));
+      if (videoItem) {
+        const hd    = videoItem.video_versions[0];
+        const thumb = videoItem.image_versions2?.candidates?.[0]?.url || '';
+        return {
+          status:     true,
+          download:   hd.url,
+          downloadSD: null,
+          thumbnail:  thumb,
+          quality:    'HD',
+          title:      data.caption?.text?.slice(0, 80) || 'Instagram Video',
+          author:     data.user?.username || ''
+        };
+      }
+    }
+
+    // flat download_url / url inside data
+    if (data.download_url || data.url || data.video_url) {
+      return {
+        status:     true,
+        download:   data.download_url || data.url || data.video_url,
+        downloadSD: data.download_url_sd || null,
+        thumbnail:  data.thumbnail_url || data.thumbnail || '',
+        quality:    'HD',
+        title:      data.title || 'Instagram Video',
+        author:     data.user?.username || data.author || ''
+      };
+    }
   }
 
   /* ── Shape B: { urls: [{ url, quality }], thumbnail } ── */
@@ -129,7 +184,7 @@ async function fetchViaRapidAPI(instagramUrl) {
     };
   }
 
-  /* ── Shape C: flat { url / download_url / video_url, thumbnail } ── */
+  /* ── Shape C: flat { url / download_url / video_url } ── */
   if (d && (d.download_url || d.url || d.video_url)) {
     return {
       status:     true,
@@ -142,21 +197,7 @@ async function fetchViaRapidAPI(instagramUrl) {
     };
   }
 
-  /* ── Shape D: { result: { ... } } ── */
-  if (d && d.result) {
-    const r = d.result;
-    return {
-      status:     true,
-      download:   r.download_url || r.url || r.video_url,
-      downloadSD: r.download_url_sd || null,
-      thumbnail:  r.thumbnail || r.thumbnail_url || '',
-      quality:    'HD',
-      title:      r.title  || 'Instagram Video',
-      author:     r.author || r.username || ''
-    };
-  }
-
-  /* ── Shape E: direct array ── */
+  /* ── Shape D: direct array ── */
   if (Array.isArray(d) && d.length > 0) {
     const hd = d.find(u => /hd/i.test(u.quality || '')) || d[0];
     return {
@@ -172,7 +213,8 @@ async function fetchViaRapidAPI(instagramUrl) {
 
   throw new Error(
     'RapidAPI returned an unrecognised response shape. ' +
-    'The post may be private, deleted, or the API subscription may have expired.'
+    'The post may be private, deleted, or the API subscription may have expired.\n' +
+    'Raw: ' + JSON.stringify(d).slice(0, 200)
   );
 }
 
@@ -182,8 +224,7 @@ async function fetchViaRapidAPI(instagramUrl) {
 
 /**
  * Scrapes the Instagram page source and extracts a video URL.
- * Used only when the RapidAPI call fails.
- * @param {string} url — normalised Instagram URL (no query params)
+ * @param {string} url — normalised Instagram URL
  * @returns {Promise<string>}
  */
 async function scrapeVideoUrl(url) {
@@ -228,7 +269,6 @@ async function scrapeVideoUrl(url) {
 
 /**
  * Fetch Instagram oEmbed metadata (title, author, thumbnail).
- * Public, no auth required. Used alongside the scrape fallback.
  * @param {string} url
  * @returns {Promise<{title:string, author:string, thumbnail:string}>}
  */
@@ -260,15 +300,15 @@ async function fetchOEmbedMeta(url) {
 
 /**
  * Main entry: tries RapidAPI first, falls back to scraping.
- * @param {string} rawUrl — user-supplied URL (may contain query params)
+ * @param {string} rawUrl — user-supplied URL
  * @returns {Promise<Object>}
  */
 async function fetchInstagramData(rawUrl) {
   const normUrl = normaliseURL(rawUrl);
 
-  /* ── Method 1: RapidAPI (primary) ── */
+  /* ── Method 1: RapidAPI instagram120 (primary) ── */
   try {
-    console.log(`[Method 1] RapidAPI → ${rawUrl}`);
+    console.log(`[Method 1] RapidAPI instagram120 → ${normUrl}`);
     const result = await fetchViaRapidAPI(rawUrl);
     if (result && result.download) return result;
   } catch (err) {
@@ -310,7 +350,7 @@ async function fetchInstagramData(rawUrl) {
 
 /* ── GET /health ── */
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', version: '2.0.0', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', version: '2.1.0', timestamp: new Date().toISOString() });
 });
 
 /* ── POST /download ── */
@@ -345,8 +385,7 @@ app.post('/download', async (req, res) => {
   }
 });
 
-/* ── GET /proxy-download — streams the video through the server so the
-       browser triggers a Save-As dialog instead of playing inline ── */
+/* ── GET /proxy-download ── */
 app.get('/proxy-download', async (req, res) => {
   const { url, filename } = req.query;
 
@@ -418,14 +457,15 @@ app.use((err, _req, res, _next) => {
 ═══════════════════════════════════════════════════════════ */
 app.listen(PORT, () => {
   console.log('\n╔══════════════════════════════════════════╗');
-  console.log('║          ReelSnap  v2.0  🎬              ║');
+  console.log('║          ReelSnap  v2.1  🎬              ║');
   console.log('╠══════════════════════════════════════════╣');
   console.log(`║  Server  →  http://localhost:${PORT}         ║`);
   console.log('║  POST /download       — extract video    ║');
   console.log('║  GET  /proxy-download — stream download  ║');
   console.log('║  GET  /health         — health check     ║');
   console.log('╚══════════════════════════════════════════╝\n');
-  console.log(`  RapidAPI key: ${RAPIDAPI_KEY.slice(0, 8)}...${RAPIDAPI_KEY.slice(-4)}\n`);
+  console.log(`  RapidAPI host: ${RAPIDAPI_HOST}`);
+  console.log(`  RapidAPI key:  ${RAPIDAPI_KEY.slice(0, 8)}...${RAPIDAPI_KEY.slice(-4)}\n`);
 });
 
 module.exports = app;
