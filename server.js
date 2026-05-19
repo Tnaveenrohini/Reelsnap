@@ -2,13 +2,13 @@
    ReelSnap — Express.js Backend Server
    Instagram Video Downloader API
 
-   Primary:  instagram120.p.rapidapi.com (RapidAPI)
+   Primary:  instagram-downloader-v2-scraper-reels-igtv-posts-stories.p.rapidapi.com (RapidAPI)
    Fallback: Page scraping via axios
 
    Endpoints:
-     POST /download         — Extract Instagram video/reel download URL
-     GET  /proxy-download   — Proxy video download (handles CORS + forces save)
-     GET  /health           — Server health check
+      POST /download         — Extract Instagram video/reel download URL
+      GET  /proxy-download   — Proxy video download (handles CORS + forces save)
+      GET  /health           — Server health check
 ═══════════════════════════════════════════════════════════ */
 
 'use strict';
@@ -17,14 +17,20 @@ const express = require('express');
 const cors    = require('cors');
 const axios   = require('axios');
 const path    = require('path');
+require('dotenv').config();
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-/* ─── RapidAPI credentials ─── */
-const RAPIDAPI_KEY  = process.env.RAPIDAPI_KEY  || 'e1a114cc67msh944af74a26bd9edp1735d9jsn28ed5df7737f';
-const RAPIDAPI_HOST = 'instagram120.p.rapidapi.com';
-const RAPIDAPI_URL  = 'https://instagram120.p.rapidapi.com/api/instagram/mediaByShortcode';
+/* ─── RapidAPI credentials (from .env or fallback) ─── */
+const RAPIDAPI_KEY  = process.env.RAPIDAPI_KEY;
+const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'instagram-downloader-v2-scraper-reels-igtv-posts-stories.p.rapidapi.com';
+const RAPIDAPI_URL  = process.env.RAPIDAPI_URL || 'https://instagram-downloader-v2-scraper-reels-igtv-posts-stories.p.rapidapi.com/get-post';
+
+if (!RAPIDAPI_KEY) {
+  console.warn('⚠️  WARNING: RAPIDAPI_KEY not found in environment variables!');
+  console.warn('Please set RAPIDAPI_KEY in your .env file');
+}
 
 /* ═══════════════════════════════════════════════════════════
    MIDDLEWARE
@@ -87,136 +93,80 @@ function extractShortcode(url) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   PRIMARY: instagram120.p.rapidapi.com/api/instagram/mediaByShortcode
+   PRIMARY: instagram-downloader-v2-scraper RapidAPI
 ═══════════════════════════════════════════════════════════ */
 
 /**
- * Call the instagram120 RapidAPI endpoint using mediaByShortcode.
- * Sends { shortcode } as POST body and handles multiple response shapes.
+ * Call the RapidAPI endpoint to fetch Instagram media.
+ * Sends { url } as query parameter and handles response.
  *
  * @param {string} instagramUrl
  * @returns {Promise<Object>}
  */
 async function fetchViaRapidAPI(instagramUrl) {
-  const shortcode = extractShortcode(instagramUrl);
-  
-  if (!shortcode) {
-    throw new Error('Could not extract shortcode from URL');
+  if (!RAPIDAPI_KEY) {
+    throw new Error('RapidAPI key not configured. Please set RAPIDAPI_KEY in .env');
   }
 
-  console.log(`[RapidAPI] Requesting shortcode: ${shortcode}`);
+  const normUrl = normaliseURL(instagramUrl);
+  console.log(`[RapidAPI] Requesting: ${normUrl}`);
 
-  const apiRes = await axios.post(
-    RAPIDAPI_URL,
-    { shortcode },
-    {
-      headers: {
-        'Content-Type':    'application/json',
-        'x-rapidapi-host': RAPIDAPI_HOST,
-        'x-rapidapi-key':  RAPIDAPI_KEY
-      },
-      timeout: 20000
-    }
-  );
+  const apiRes = await axios.get(RAPIDAPI_URL, {
+    params: { url: normUrl },
+    headers: {
+      'Content-Type':    'application/json',
+      'x-rapidapi-host': RAPIDAPI_HOST,
+      'x-rapidapi-key':  RAPIDAPI_KEY
+    },
+    timeout: 20000
+  });
 
   const d = apiRes.data;
   console.log('[RapidAPI] raw response:', JSON.stringify(d).slice(0, 600));
 
-  /* ── Shape A: { video_versions, image_versions2, user, caption, ... } (Instagram media object) ── */
+  /* ── Parse response and extract video data ── */
   if (d && typeof d === 'object') {
     
-    // video_versions array — pick highest quality (first)
-    if (Array.isArray(d.video_versions) && d.video_versions.length > 0) {
-      const hd = d.video_versions[0];
-      const sd = d.video_versions[1] || null;
-      const thumb = d.image_versions2?.candidates?.[0]?.url || '';
+    // Direct download URL in response
+    if (d.download_url || d.video_url || d.url) {
       return {
         status:     true,
-        download:   hd.url,
-        downloadSD: sd ? sd.url : null,
-        thumbnail:  thumb,
-        quality:    'HD',
-        title:      d.caption?.text?.slice(0, 80) || 'Instagram Video',
-        author:     d.user?.username || ''
+        download:   d.download_url || d.video_url || d.url,
+        downloadSD: d.download_url_sd || d.video_url_sd || null,
+        thumbnail:  d.thumbnail_url || d.thumbnail || d.image_url || '',
+        quality:    d.quality || 'HD',
+        title:      d.title || d.caption || 'Instagram Video',
+        author:     d.author || d.username || d.user?.username || ''
       };
     }
 
-    // carousel_media — pick first video item
-    if (Array.isArray(d.carousel_media)) {
-      const videoItem = d.carousel_media.find(m => Array.isArray(m.video_versions));
-      if (videoItem) {
-        const hd    = videoItem.video_versions[0];
-        const thumb = videoItem.image_versions2?.candidates?.[0]?.url || '';
-        return {
-          status:     true,
-          download:   hd.url,
-          downloadSD: null,
-          thumbnail:  thumb,
-          quality:    'HD',
-          title:      d.caption?.text?.slice(0, 80) || 'Instagram Video',
-          author:     d.user?.username || ''
-        };
-      }
-    }
-
-    // flat download_url / url / video_url at root
-    if (d.download_url || d.url || d.video_url) {
+    // Wrapped in data object
+    if (d.data && typeof d.data === 'object') {
+      const media = d.data;
       return {
         status:     true,
-        download:   d.download_url || d.url || d.video_url,
-        downloadSD: d.download_url_sd || d.url_sd || null,
-        thumbnail:  d.thumbnail_url || d.thumbnail || d.image_versions2?.candidates?.[0]?.url || '',
-        quality:    'HD',
-        title:      d.title || 'Instagram Video',
-        author:     d.user?.username || d.author || d.username || ''
-      };
-    }
-  }
-
-  /* ── Shape B: Wrapped in { data: { ... } } ── */
-  if (d && d.data && typeof d.data === 'object') {
-    const media = d.data;
-
-    if (Array.isArray(media.video_versions) && media.video_versions.length > 0) {
-      const hd = media.video_versions[0];
-      const sd = media.video_versions[1] || null;
-      const thumb = media.image_versions2?.candidates?.[0]?.url || '';
-      return {
-        status:     true,
-        download:   hd.url,
-        downloadSD: sd ? sd.url : null,
-        thumbnail:  thumb,
-        quality:    'HD',
-        title:      media.caption?.text?.slice(0, 80) || 'Instagram Video',
-        author:     media.user?.username || ''
-      };
-    }
-
-    if (media.download_url || media.url || media.video_url) {
-      return {
-        status:     true,
-        download:   media.download_url || media.url || media.video_url,
+        download:   media.download_url || media.video_url || media.url || '',
         downloadSD: media.download_url_sd || null,
-        thumbnail:  media.thumbnail_url || media.thumbnail || '',
-        quality:    'HD',
-        title:      media.title || 'Instagram Video',
-        author:     media.user?.username || media.author || ''
+        thumbnail:  media.thumbnail_url || media.thumbnail || media.image_url || '',
+        quality:    media.quality || 'HD',
+        title:      media.title || media.caption || 'Instagram Video',
+        author:     media.author || media.username || ''
       };
     }
-  }
 
-  /* ── Shape C: Array response ── */
-  if (Array.isArray(d) && d.length > 0) {
-    const hd = d.find(u => /hd/i.test(u.quality || '')) || d[0];
-    return {
-      status:     true,
-      download:   hd.url || hd.download_url,
-      downloadSD: null,
-      thumbnail:  hd.thumbnail || '',
-      quality:    'HD',
-      title:      hd.title || 'Instagram Video',
-      author:     hd.author || ''
-    };
+    // Array of URLs
+    if (Array.isArray(d) && d.length > 0) {
+      const first = d[0];
+      return {
+        status:     true,
+        download:   first.url || first.download_url || first,
+        downloadSD: null,
+        thumbnail:  first.thumbnail || '',
+        quality:    'HD',
+        title:      first.title || 'Instagram Video',
+        author:     first.author || ''
+      };
+    }
   }
 
   throw new Error(
@@ -331,9 +281,9 @@ async function fetchOEmbedMeta(url) {
 async function fetchInstagramData(rawUrl) {
   const normUrl = normaliseURL(rawUrl);
 
-  /* ── Method 1: RapidAPI instagram120 mediaByShortcode (primary) ── */
+  /* ── Method 1: RapidAPI (primary) ── */
   try {
-    console.log(`[Method 1] RapidAPI mediaByShortcode → ${normUrl}`);
+    console.log(`[Method 1] RapidAPI → ${normUrl}`);
     const result = await fetchViaRapidAPI(rawUrl);
     if (result && result.download) return result;
   } catch (err) {
@@ -490,7 +440,7 @@ app.listen(PORT, () => {
   console.log('║  GET  /health         — health check     ║');
   console.log('╚══════════════════════════════════════════╝\n');
   console.log(`  RapidAPI host: ${RAPIDAPI_HOST}`);
-  console.log(`  RapidAPI key:  ${RAPIDAPI_KEY.slice(0, 8)}...${RAPIDAPI_KEY.slice(-4)}\n`);
+  console.log(`  RapidAPI key:  ${RAPIDAPI_KEY ? RAPIDAPI_KEY.slice(0, 8) + '...' + RAPIDAPI_KEY.slice(-4) : 'NOT SET'}\n`);
 });
 
 module.exports = app;
