@@ -6,7 +6,7 @@
 'use strict';
 
 /* ─── CONFIG ─── */
-const API_BASE = 'http://localhost:3000';
+const API_BASE = 'https://reelsnap-production-1805.up.railway.app';
 
 /* ─── DOM REFERENCES ─── */
 const urlInput      = document.getElementById('urlInput');
