@@ -24,7 +24,7 @@ const PORT = process.env.PORT || 3000;
 /* ─── RapidAPI credentials ─── */
 const RAPIDAPI_KEY  = process.env.RAPIDAPI_KEY  || 'e1a114cc67msh944af74a26bd9edp1735d9jsn28ed5df7737f';
 const RAPIDAPI_HOST = 'instagram120.p.rapidapi.com';
-const RAPIDAPI_URL  = 'https://instagram120.p.rapidapi.com/api/instagram/post';
+const RAPIDAPI_URL  = 'https://instagram120.p.rapidapi.com/api/instagram/mediaByShortcode';
 
 /* ═══════════════════════════════════════════════════════════
    MIDDLEWARE
@@ -87,23 +87,28 @@ function extractShortcode(url) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   PRIMARY: instagram120.p.rapidapi.com
+   PRIMARY: instagram120.p.rapidapi.com/api/instagram/mediaByShortcode
 ═══════════════════════════════════════════════════════════ */
 
 /**
- * Call the instagram120 RapidAPI endpoint.
- * Sends { url } as POST body and handles multiple response shapes.
+ * Call the instagram120 RapidAPI endpoint using mediaByShortcode.
+ * Sends { shortcode } as POST body and handles multiple response shapes.
  *
  * @param {string} instagramUrl
  * @returns {Promise<Object>}
  */
 async function fetchViaRapidAPI(instagramUrl) {
-  const normUrl   = normaliseURL(instagramUrl);
-  const shortcode = extractShortcode(normUrl);
+  const shortcode = extractShortcode(instagramUrl);
+  
+  if (!shortcode) {
+    throw new Error('Could not extract shortcode from URL');
+  }
+
+  console.log(`[RapidAPI] Requesting shortcode: ${shortcode}`);
 
   const apiRes = await axios.post(
     RAPIDAPI_URL,
-    { url: normUrl },
+    { shortcode },
     {
       headers: {
         'Content-Type':    'application/json',
@@ -117,29 +122,28 @@ async function fetchViaRapidAPI(instagramUrl) {
   const d = apiRes.data;
   console.log('[RapidAPI] raw response:', JSON.stringify(d).slice(0, 600));
 
-  /* ── Shape A: { data: { video_versions, image_versions2, user, ... } } (GraphQL-style) ── */
-  if (d && d.data) {
-    const data = d.data;
-
+  /* ── Shape A: { video_versions, image_versions2, user, caption, ... } (Instagram media object) ── */
+  if (d && typeof d === 'object') {
+    
     // video_versions array — pick highest quality (first)
-    if (Array.isArray(data.video_versions) && data.video_versions.length > 0) {
-      const hd = data.video_versions[0];
-      const sd = data.video_versions[1] || null;
-      const thumb = data.image_versions2?.candidates?.[0]?.url || '';
+    if (Array.isArray(d.video_versions) && d.video_versions.length > 0) {
+      const hd = d.video_versions[0];
+      const sd = d.video_versions[1] || null;
+      const thumb = d.image_versions2?.candidates?.[0]?.url || '';
       return {
         status:     true,
         download:   hd.url,
         downloadSD: sd ? sd.url : null,
         thumbnail:  thumb,
         quality:    'HD',
-        title:      data.caption?.text?.slice(0, 80) || 'Instagram Video',
-        author:     data.user?.username || ''
+        title:      d.caption?.text?.slice(0, 80) || 'Instagram Video',
+        author:     d.user?.username || ''
       };
     }
 
     // carousel_media — pick first video item
-    if (Array.isArray(data.carousel_media)) {
-      const videoItem = data.carousel_media.find(m => Array.isArray(m.video_versions));
+    if (Array.isArray(d.carousel_media)) {
+      const videoItem = d.carousel_media.find(m => Array.isArray(m.video_versions));
       if (videoItem) {
         const hd    = videoItem.video_versions[0];
         const thumb = videoItem.image_versions2?.candidates?.[0]?.url || '';
@@ -149,55 +153,59 @@ async function fetchViaRapidAPI(instagramUrl) {
           downloadSD: null,
           thumbnail:  thumb,
           quality:    'HD',
-          title:      data.caption?.text?.slice(0, 80) || 'Instagram Video',
-          author:     data.user?.username || ''
+          title:      d.caption?.text?.slice(0, 80) || 'Instagram Video',
+          author:     d.user?.username || ''
         };
       }
     }
 
-    // flat download_url / url inside data
-    if (data.download_url || data.url || data.video_url) {
+    // flat download_url / url / video_url at root
+    if (d.download_url || d.url || d.video_url) {
       return {
         status:     true,
-        download:   data.download_url || data.url || data.video_url,
-        downloadSD: data.download_url_sd || null,
-        thumbnail:  data.thumbnail_url || data.thumbnail || '',
+        download:   d.download_url || d.url || d.video_url,
+        downloadSD: d.download_url_sd || d.url_sd || null,
+        thumbnail:  d.thumbnail_url || d.thumbnail || d.image_versions2?.candidates?.[0]?.url || '',
         quality:    'HD',
-        title:      data.title || 'Instagram Video',
-        author:     data.user?.username || data.author || ''
+        title:      d.title || 'Instagram Video',
+        author:     d.user?.username || d.author || d.username || ''
       };
     }
   }
 
-  /* ── Shape B: { urls: [{ url, quality }], thumbnail } ── */
-  if (d && Array.isArray(d.urls) && d.urls.length > 0) {
-    const hd = d.urls.find(u => /hd/i.test(u.quality || '')) || d.urls[0];
-    const sd = d.urls.find(u => /sd/i.test(u.quality || '')) || null;
-    return {
-      status:     true,
-      download:   hd.url || hd.download_url,
-      downloadSD: sd ? (sd.url || sd.download_url) : null,
-      thumbnail:  d.thumbnail || d.thumbnail_url || '',
-      quality:    'HD',
-      title:      d.title  || 'Instagram Video',
-      author:     d.author || d.username || ''
-    };
+  /* ── Shape B: Wrapped in { data: { ... } } ── */
+  if (d && d.data && typeof d.data === 'object') {
+    const media = d.data;
+
+    if (Array.isArray(media.video_versions) && media.video_versions.length > 0) {
+      const hd = media.video_versions[0];
+      const sd = media.video_versions[1] || null;
+      const thumb = media.image_versions2?.candidates?.[0]?.url || '';
+      return {
+        status:     true,
+        download:   hd.url,
+        downloadSD: sd ? sd.url : null,
+        thumbnail:  thumb,
+        quality:    'HD',
+        title:      media.caption?.text?.slice(0, 80) || 'Instagram Video',
+        author:     media.user?.username || ''
+      };
+    }
+
+    if (media.download_url || media.url || media.video_url) {
+      return {
+        status:     true,
+        download:   media.download_url || media.url || media.video_url,
+        downloadSD: media.download_url_sd || null,
+        thumbnail:  media.thumbnail_url || media.thumbnail || '',
+        quality:    'HD',
+        title:      media.title || 'Instagram Video',
+        author:     media.user?.username || media.author || ''
+      };
+    }
   }
 
-  /* ── Shape C: flat { url / download_url / video_url } ── */
-  if (d && (d.download_url || d.url || d.video_url)) {
-    return {
-      status:     true,
-      download:   d.download_url || d.url || d.video_url,
-      downloadSD: d.download_url_sd || d.url_sd || null,
-      thumbnail:  d.thumbnail || d.thumbnail_url || d.cover || '',
-      quality:    'HD',
-      title:      d.title   || 'Instagram Video',
-      author:     d.author  || d.username || ''
-    };
-  }
-
-  /* ── Shape D: direct array ── */
+  /* ── Shape C: Array response ── */
   if (Array.isArray(d) && d.length > 0) {
     const hd = d.find(u => /hd/i.test(u.quality || '')) || d[0];
     return {
@@ -214,7 +222,7 @@ async function fetchViaRapidAPI(instagramUrl) {
   throw new Error(
     'RapidAPI returned an unrecognised response shape. ' +
     'The post may be private, deleted, or the API subscription may have expired.\n' +
-    'Raw: ' + JSON.stringify(d).slice(0, 200)
+    'Raw: ' + JSON.stringify(d).slice(0, 300)
   );
 }
 
@@ -228,36 +236,53 @@ async function fetchViaRapidAPI(instagramUrl) {
  * @returns {Promise<string>}
  */
 async function scrapeVideoUrl(url) {
-  const res = await axios.get(url, {
-    timeout: 18000,
-    headers: {
-      'User-Agent':      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-      'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Cache-Control':   'no-cache',
-      'Referer':         'https://www.instagram.com/'
-    },
-    maxRedirects: 5
-  });
-
-  const html = res.data;
-
-  const patterns = [
-    /"video_url":"(https:[^"]+\.mp4[^"]*)"/,
-    /video_url\\?":"(https:[^"\\]+\.mp4[^"\\]*)"/,
-    /"contentUrl":"(https:[^"]+\.mp4[^"]*)"/,
-    /property="og:video"\s+content="([^"]+)"/,
-    /og:video:url"\s+content="([^"]+)"/
+  const userAgents = [
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   ];
 
-  for (const p of patterns) {
-    const m = html.match(p);
-    if (m && m[1]) {
-      return m[1]
-        .replace(/\\u0026/g, '&')
-        .replace(/\\\//g, '/')
-        .replace(/\\/g, '');
+  for (const ua of userAgents) {
+    try {
+      const res = await axios.get(url, {
+        timeout: 18000,
+        headers: {
+          'User-Agent': ua,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Cache-Control': 'no-cache',
+          'Referer': 'https://www.instagram.com/',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none'
+        },
+        maxRedirects: 10,
+        validateStatus: () => true
+      });
+
+      const html = res.data;
+
+      const patterns = [
+        /"video_url":"(https:[^"]+\.mp4[^"]*)"/,
+        /video_url\\?":"(https:[^"\\]+\.mp4[^"\\]*)"/,
+        /"contentUrl":"(https:[^"]+\.mp4[^"]*)"/,
+        /property="og:video"\s+content="([^"]+)"/,
+        /og:video:url"\s+content="([^"]+)"/,
+        /src="(https:\/\/[^"]+\.mp4[^"]*)"/
+      ];
+
+      for (const p of patterns) {
+        const m = html.match(p);
+        if (m && m[1]) {
+          return m[1]
+            .replace(/\\u0026/g, '&')
+            .replace(/\\\//g, '/')
+            .replace(/\\/g, '');
+        }
+      }
+    } catch (err) {
+      console.warn(`[scrape] User-Agent failed: ${ua.slice(0, 50)}...`);
     }
   }
 
@@ -280,7 +305,7 @@ async function fetchOEmbedMeta(url) {
         timeout: 8000,
         headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; bot/1.0)',
-          'Accept':     'application/json'
+          'Accept': 'application/json'
         }
       }
     );
@@ -306,9 +331,9 @@ async function fetchOEmbedMeta(url) {
 async function fetchInstagramData(rawUrl) {
   const normUrl = normaliseURL(rawUrl);
 
-  /* ── Method 1: RapidAPI instagram120 (primary) ── */
+  /* ── Method 1: RapidAPI instagram120 mediaByShortcode (primary) ── */
   try {
-    console.log(`[Method 1] RapidAPI instagram120 → ${normUrl}`);
+    console.log(`[Method 1] RapidAPI mediaByShortcode → ${normUrl}`);
     const result = await fetchViaRapidAPI(rawUrl);
     if (result && result.download) return result;
   } catch (err) {
