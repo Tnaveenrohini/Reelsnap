@@ -26,7 +26,7 @@ const RAPIDAPI_KEY  = process.env.RAPIDAPI_KEY  || 'e1a114cc67msh944af74a26bd9ed
 const RAPIDAPI_HOST = 'instagram120.p.rapidapi.com';
 const RAPIDAPI_URL  = 'https://instagram120.p.rapidapi.com/api/instagram/post';
 // Try these one at a time:
-const RAPIDAPI_URL = 'https://instagram120.p.rapidapi.com/api/instagram/posts';  // plural
+const RAPIDAPI_URL = 'https://instagram120.p.rapidapi.com/api/instagram/posts'; 
 // or
 const RAPIDAPI_URL = 'https://instagram120.p.rapidapi.com/api/instagram/reels';
 // or  
